@@ -1,8 +1,8 @@
-# Netra
+# Netspecs
 
-Netra is a high-performance network reconnaissance and packet analysis tool that combines the core capabilities of Nmap and Wireshark into a unified cybersecurity application.
+NetSpecs is a high-performance network reconnaissance and packet analysis tool that combines the core capabilities of Nmap and Wireshark into a unified cybersecurity application.
 
-It is designed to discover devices and services on a network while also providing real-time visibility into network traffic. Netra can perform host discovery, port scanning, service detection, packet capture, protocol analysis, traffic filtering, and network statistics.
+It is designed to discover devices and services on a network while also providing real-time visibility into network traffic. NetSpecs can perform host discovery, port scanning, service detection, packet capture, protocol analysis, traffic filtering, and network statistics.
 
 ## Planned Features
 
