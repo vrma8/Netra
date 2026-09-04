@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Netra · network reconnaissance &amp; packet analysis</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">◉</span>
+    <div>
+      <h1>Netra</h1>
+      <p class="tagline">network reconnaissance &amp; packet analysis</p>
+    </div>
+  </div>
+  <div class="chips" id="statusChips">
+    <span class="chip" id="chipVersion">…</span>
+    <span class="chip" id="chipCapture">capture idle</span>
+    <span class="chip" id="chipScan">scan idle</span>
+    <span class="chip" id="chipFlows">0 flows</span>
+  </div>
+</header>
+
+<nav class="tabs" id="tabs">
+  <button class="tab active" data-tab="live">Live packets</button>
+  <button class="tab" data-tab="stats">Statistics</button>
+  <button class="tab" data-tab="flows">Flows</button>
+  <button class="tab" data-tab="scan">Scan</button>
+  <button class="tab" data-tab="hosts">Hosts</button>
+  <button class="tab" data-tab="system">System</button>
+</nav>
+
+<main>
+  <!-- ============================ live ============================ -->
+  <section class="panel active" id="panel-live">
+    <div class="toolbar">
+      <label>Interface
+        <select id="captureInterface"></select>
+      </label>
+      <label class="grow">Display filter
+        <input id="captureFilter" type="text" placeholder='e.g. dns || tcp.port == 443 || http.request.method == "GET"' spellcheck="false">
+      </label>
+      <label>Packets
+        <input id="captureCount" type="number" min="0" step="100" value="0" title="0 = unlimited">
+      </label>
+      <label>Seconds
+        <input id="captureSeconds" type="number" min="0" value="0" title="0 = until stopped">
+      </label>
+      <button id="btnCaptureStart" class="primary">Start capture</button>
+      <button id="btnCaptureStop" class="danger" disabled>Stop</button>
+      <button id="btnDemo" title="Capture generated traffic - no privileges needed">Demo traffic</button>
+      <span class="spacer"></span>
+      <label class="check"><input id="autoscroll" type="checkbox" checked> autoscroll</label>
+      <button id="btnClearPackets">Clear view</button>
+    </div>
+    <div class="meter">
+      <div class="meter-row">
+        <span id="liveCounters">0 packets · 0 B</span>
+        <span id="liveRate">0 pps</span>
+      </div>
+      <div class="spark" id="liveSpark"></div>
+    </div>
+    <div class="tablewrap tall">
+      <table id="packetTable">
+        <thead>
+          <tr><th class="num">No.</th><th>Time</th><th>Source</th><th>Destination</th><th>Proto</th><th class="num">Len</th><th>Info</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="detail" id="packetDetail">Select a packet to inspect its decoded layers.</div>
+    <p class="hint" id="liveHint"></p>
+  </section>
+
+  <!-- ============================ stats =========================== -->
+  <section class="panel" id="panel-stats">
+    <div class="cards" id="statCards"></div>
+    <div class="grid2">
+      <div class="card">
+        <h3>Protocol breakdown</h3>
+        <div id="protocolBars" class="bars"></div>
+      </div>
+      <div class="card">
+        <h3>Throughput (1&nbsp;s buckets)</h3>
+        <div id="throughputChart" class="chart"></div>
+        <div id="packetSizes" class="bars small"></div>
+      </div>
+    </div>
+    <div class="grid2">
+      <div class="card">
+        <h3>Top talkers</h3>
+        <div class="tablewrap"><table id="talkerTable"><thead><tr><th>Address</th><th class="num">Tx pkts</th><th class="num">Tx bytes</th><th class="num">Rx pkts</th><th class="num">Rx bytes</th></tr></thead><tbody></tbody></table></div>
+      </div>
+      <div class="card">
+        <h3>Top conversations</h3>
+        <div class="tablewrap"><table id="conversationTable"><thead><tr><th>Conversation</th><th class="num">Pkts</th><th class="num">Bytes</th><th>App</th></tr></thead><tbody></tbody></table></div>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Issues &amp; capture info</h3>
+      <div id="statsNotes" class="notes"></div>
+    </div>
+  </section>
+
+  <!-- ============================ flows =========================== -->
+  <section class="panel" id="panel-flows">
+    <div class="toolbar">
+      <label>Sort
+        <select id="flowSort">
+          <option value="last">Most recent</option>
+          <option value="bytes">By bytes</option>
+          <option value="packets">By packets</option>
+          <option value="duration">By duration</option>
+        </select>
+      </label>
+      <label>Rows
+        <input id="flowLimit" type="number" min="10" max="1000" step="10" value="100">
+      </label>
+      <button id="btnFlowsRefresh">Refresh</button>
+      <span class="spacer"></span>
+      <span id="flowSummary" class="muted"></span>
+    </div>
+    <div class="tablewrap tall">
+      <table id="flowTable">
+        <thead><tr><th>Proto</th><th>Source</th><th>Destination</th><th class="num">Pkts</th><th class="num">Bytes</th><th>State</th><th>Service</th><th>Info</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ============================ scan ============================ -->
+  <section class="panel" id="panel-scan">
+    <div class="toolbar">
+      <label class="grow">Targets
+        <input id="scanTargets" type="text" placeholder="192.168.1.0/24, 10.0.0.1, example.com (empty = local subnets)" spellcheck="false">
+      </label>
+      <label>Ports
+        <input id="scanPorts" type="text" value="top100" spellcheck="false">
+      </label>
+      <label>Type
+        <select id="scanType">
+          <option value="connect">TCP connect (-sT)</option>
+          <option value="syn">TCP SYN (-sS, needs root)</option>
+          <option value="udp">UDP (-sU)</option>
+          <option value="connect,udp">TCP + UDP</option>
+          <option value="connect,version">Connect + version (-sV)</option>
+          <option value="discovery">Host discovery (-sn)</option>
+        </select>
+      </label>
+      <label>Timing
+        <select id="scanTiming">
+          <option value="2">T2 polite</option>
+          <option value="3" selected>T3 normal</option>
+          <option value="4">T4 aggressive</option>
+          <option value="5">T5 insane</option>
+        </select>
+      </label>
+      <button id="btnScanStart" class="primary">Start scan</button>
+      <button id="btnScanStop" class="danger" disabled>Stop</button>
+    </div>
+    <div class="card">
+      <div class="progress"><div class="progress-bar" id="scanProgressBar"></div></div>
+      <div class="meter-row">
+        <span id="scanPhase">idle</span>
+        <span id="scanCounters"></span>
+      </div>
+      <p class="hint" id="scanError"></p>
+    </div>
+    <div class="card">
+      <h3>Results</h3>
+      <div class="tablewrap tall">
+        <table id="scanTable">
+          <thead><tr><th>Host</th><th>Hostname</th><th>Status</th><th class="num">Latency</th><th>Open ports</th><th>Details</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ hosts =========================== -->
+  <section class="panel" id="panel-hosts">
+    <div class="toolbar">
+      <button id="btnHostsRefresh">Refresh</button>
+      <span class="spacer"></span>
+      <span class="muted">ARP/neighbour cache, hosts seen in the capture and the last scan.</span>
+    </div>
+    <div class="grid2">
+      <div class="card">
+        <h3>Neighbours (kernel cache)</h3>
+        <div class="tablewrap"><table id="neighborTable"><thead><tr><th>Address</th><th>MAC</th><th>Interface</th><th>State</th><th>Hostname</th></tr></thead><tbody></tbody></table></div>
+      </div>
+      <div class="card">
+        <h3>Observed in capture</h3>
+        <div class="tablewrap"><table id="observedTable"><thead><tr><th>Address</th><th>MAC</th><th class="num">Tx pkts</th><th class="num">Rx pkts</th><th class="num">Bytes</th></tr></thead><tbody></tbody></table></div>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Scanned hosts</h3>
+      <div class="tablewrap"><table id="scannedTable"><thead><tr><th>Address</th><th>Hostname</th><th>Up</th><th class="num">Open</th><th>Open ports</th></tr></thead><tbody></tbody></table></div>
+    </div>
+  </section>
+
+  <!-- ============================ system ========================== -->
+  <section class="panel" id="panel-system">
+    <div class="grid2">
+      <div class="card">
+        <h3>Interfaces</h3>
+        <div class="tablewrap"><table id="interfaceTable"><thead><tr><th>Name</th><th>State</th><th>MAC</th><th>Addresses</th><th class="num">MTU</th><th>Driver</th></tr></thead><tbody></tbody></table></div>
+      </div>
+      <div class="card">
+        <h3>Routing table</h3>
+        <div class="tablewrap"><table id="routeTable"><thead><tr><th>Destination</th><th>Gateway</th><th>Interface</th><th class="num">Metric</th></tr></thead><tbody></tbody></table></div>
+      </div>
+    </div>
+    <div class="grid2">
+      <div class="card">
+        <h3>Build &amp; capabilities</h3>
+        <div id="capabilityList" class="notes"></div>
+      </div>
+      <div class="card">
+        <h3>Display filter fields</h3>
+        <label class="grow"><input id="fieldSearch" type="text" placeholder="filter fields…"></label>
+        <div class="tablewrap" id="fieldTableWrap"><table id="fieldTable"><thead><tr><th>Field</th><th>Type</th><th>Description</th><th>Example</th></tr></thead><tbody></tbody></table></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="footer">
+  <span id="footerInfo">Netra</span>
+  <span class="muted">JSON API: <code>/api/status</code> · <code>/api/packets</code> · <code>/api/stats</code> · <code>/api/flows</code> · <code>/api/scan/start</code></span>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>

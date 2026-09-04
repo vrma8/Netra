@@ -1,0 +1,194 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Reference build: every optional dependency present, warnings are errors.
+          - name: ubuntu · gcc · all deps · -Werror
+            os: ubuntu-24.04
+            cc: gcc
+            cxx: g++
+            deps: full
+            werror: 'ON'
+          # Same tree, LLVM toolchain (different warning set, different stdlib quirks).
+          - name: ubuntu · clang · all deps
+            os: ubuntu-24.04
+            cc: clang
+            cxx: clang++
+            deps: full
+            werror: 'OFF'
+          # Zero optional dependencies: exercises the built-in pcap reader/writer,
+          # socket scanner, capture backend and JSON-Lines store fallbacks.
+          - name: ubuntu · gcc · no optional deps
+            os: ubuntu-24.04
+            cc: gcc
+            cxx: g++
+            deps: none
+            werror: 'OFF'
+          - name: macos · appleclang · system libs
+            os: macos-14
+            cc: clang
+            cxx: clang++
+            deps: system
+            werror: 'OFF'
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # so `netra version` can report the commit
+
+      - name: Install optional dependencies
+        if: matrix.deps == 'full'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpcap-dev libsqlite3-dev libboost-system-dev libssl-dev zlib1g-dev
+
+      - name: Configure
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        run: |
+          extra=""
+          if [ "${{ matrix.deps }}" = "none" ]; then
+            extra="-DNETRA_USE_PCAP=OFF -DNETRA_USE_PCAPPLUSPLUS=OFF -DNETRA_USE_BOOST=OFF \
+                   -DNETRA_USE_OPENSSL=OFF -DNETRA_USE_SQLITE=OFF -DNETRA_USE_ZLIB=OFF -DNETRA_USE_CURL=OFF"
+          fi
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DNETRA_BUILD_TESTS=ON \
+                -DNETRA_WERROR=${{ matrix.werror }} $extra
+
+      - name: Show the detected dependency set
+        run: cmake -L -N build | grep -E '^NETRA_' || true
+
+      - name: Build
+        run: cmake --build build --config Release -j 4
+
+      - name: Unit tests (ctest)
+        run: ctest --test-dir build -C Release --output-on-failure --timeout 300
+
+      - name: Built-in selftest
+        run: ./build/bin/netra selftest --no-color
+
+      - name: CLI smoke tests (no privileges required)
+        run: |
+          set -eux
+          netra=./build/bin/netra
+          # metadata + introspection
+          $netra version --json
+          $netra --help > /dev/null
+          $netra fields --json | head -5
+          $netra filters 'dns.flags.response && udp.port == 53'
+          $netra interfaces --json | head -5
+          # synthetic capture -> pcap file -> offline analysis -> filtered pcap
+          $netra capture --demo mixed -c 3000 --rate 0 --no-print --no-stats \
+                         -w /tmp/demo.pcap --no-store
+          test -s /tmp/demo.pcap
+          $netra analyze /tmp/demo.pcap --stats --flows --summary --no-color --no-store
+          $netra analyze /tmp/demo.pcap -oJ /tmp/analysis.json -oC /tmp/flows.csv --no-store
+          $netra analyze /tmp/demo.pcap -f 'dns' -w /tmp/dns-only.pcap --summary --no-color --no-store
+          $netra analyze /tmp/demo.pcap --detail 5 --no-color | head -20
+          test -s /tmp/analysis.json && test -s /tmp/flows.csv && test -s /tmp/dns-only.pcap
+          # pcap rotation
+          $netra capture --demo mixed -c 20000 --rate 0 --no-print --no-stats \
+                         -w /tmp/rot.pcap --rotate-mb 1 --no-store
+          test -s /tmp/rot-1.pcap
+          # demo convenience command
+          $netra demo --scenario dns --seconds 3 --no-print --no-flows --no-store
+          # loopback connect scan (no raw sockets) + result store round trip
+          $netra scan 127.0.0.1 -p 22,80 -Pn --no-color --store=/tmp/store.jsonl
+          $netra store --db /tmp/store.jsonl scans --json | head -5
+          $netra store --db /tmp/store.jsonl counts
+
+  sanitizers:
+    name: ubuntu · asan + ubsan
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install optional dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpcap-dev libsqlite3-dev libssl-dev
+
+      - name: Configure (Debug + sanitizers)
+        run: >
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DNETRA_BUILD_TESTS=ON
+          -DNETRA_SANITIZE=ON -DNETRA_EMBED_WEB=OFF
+
+      - name: Build
+        run: cmake --build build -j 4
+
+      - name: Unit tests under sanitizers
+        env:
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=0
+          UBSAN_OPTIONS: print_stacktrace=1
+        run: ctest --test-dir build --output-on-failure --timeout 900
+
+      - name: Selftest under sanitizers
+        run: ./build/bin/netra selftest --no-color
+
+  dashboard:
+    name: web dashboard assets + HTTP API
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate the dashboard assets
+        run: |
+          set -e
+          python3 - <<'PY'
+          import pathlib, re
+          web = pathlib.Path('web')
+          for name in ('index.html', 'app.js', 'style.css', 'favicon.svg'):
+              p = web / name
+              assert p.exists() and p.stat().st_size > 0, f'missing web/{name}'
+          js = (web / 'app.js').read_text()
+          html = (web / 'index.html').read_text()
+          # every element id the UI looks up must exist in the markup
+          missing = sorted({m for m in re.findall(r"byId\('([^']+)'\)", js) if f'id="{m}"' not in html})
+          assert not missing, f'app.js references unknown element ids: {missing}'
+          # every fetch target must be a relative API path (never a hardcoded host)
+          bad = [u for u in re.findall(r"fetch\(['\"`]([^'\"`]+)", js) if not u.startswith(('/api/', 'api/'))]
+          assert not bad, f'unexpected fetch targets: {bad}'
+          print('dashboard assets ok:', len(html), 'bytes of html,', len(js), 'bytes of js')
+          PY
+
+      - name: Build with the assets embedded
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DNETRA_BUILD_TESTS=OFF -DNETRA_EMBED_WEB=ON
+          cmake --build build -j 4
+
+      - name: Serve synthetic traffic and drive the JSON API
+        run: |
+          set -e
+          ./build/bin/netra dashboard --demo mixed --start-capture --port 18443 \
+                        --capture-seconds 20 --ring 1024 --no-color &
+          server=$!
+          ok=""
+          for _ in $(seq 1 40); do
+            sleep 1
+            if curl -fsS http://127.0.0.1:18443/api/status > /tmp/status.json; then ok=1; break; fi
+          done
+          test -n "$ok"
+          for endpoint in / /index.html /app.js /style.css /api/status /api/packets /api/stats \
+                          /api/flows /api/interfaces /api/hosts /api/filters; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:18443$endpoint")
+            echo "$endpoint -> $code"
+            test "$code" = "200"
+          done
+          python3 -c "import json;d=json.load(open('/tmp/status.json'));print('server:',d['server']['version'],'running:',d['server']['running'])"
+          wait "$server" || true
